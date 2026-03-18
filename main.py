@@ -14,7 +14,7 @@ TOPIC = "top1nfo/fazenda_piloto/sensor_solo"
 # --- CONFIGURAÇÕES DE ALERTA (WHATSAPP) ---
 # Coloque seu número com código do país (+55) e DDD. Ex: +5531999999999
 WHATSAPP_PHONE = "+5512996005169" 
-WHATSAPP_APIKEY = "SUA_CHAVE_AQUI" 
+WHATSAPP_APIKEY = "7714077" 
 
 # Memória para não floodar o WhatsApp (1 mensagem por hora)
 ultimo_alerta = None
