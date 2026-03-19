@@ -199,13 +199,13 @@ def salvar_no_banco(temp, umi, sensor_id="ESP32_Fazenda"):
 # ============================================================
 # CALLBACKS MQTT
 # ============================================================
-def on_connect(client, userdata, flags, rc):
-    if rc == 0:
+def on_connect(client, userdata, connect_flags, reason_code, properties):
+    if reason_code == 0:
         print("✅ [MQTT] Conectado ao HiveMQ!")
-        client.subscribe(TOPIC)  # Dentro do on_connect = re-inscrição automática
+        client.subscribe(TOPIC)
         print(f"📡 [MQTT] Inscrito: {TOPIC}")
     else:
-        print(f"❌ [MQTT] Falha de conexão. Código: {rc}")
+        print(f"❌ [MQTT] Falha de conexão. Código: {reason_code}")
 
 
 def on_message(client, userdata, msg):
