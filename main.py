@@ -20,12 +20,11 @@ WHATSAPP_PHONE  = "%2B5512996005169"
 WHATSAPP_APIKEY = "7714077"
 
 # ============================================================
-# DICIONÁRIO AGRONÔMICO — 4 REGRAS DO TERROIR DE PEDRA BONITA
-# Para adicionar nova regra: basta incluir novo bloco no dict.
+# DICIONÁRIO AGRONÔMICO
 # ============================================================
 REGRAS_AGRONOMICAS = {
     "geada": {
-        "cooldown": 900,   # 15 min — risco imediato
+        "cooldown": 900,
         "condicao": lambda t, h: t <= 4.0,
         "mensagem": (
             "❄️ *ALERTA GEADA — top1nfo*\n"
@@ -37,7 +36,7 @@ REGRAS_AGRONOMICAS = {
         )
     },
     "phoma": {
-        "cooldown": 10800,  # 3 horas
+        "cooldown": 10800,
         "condicao": lambda t, h: 10.0 <= t <= 18.0 and h > 85.0,
         "mensagem": (
             "🍄 *ALERTA PHOMA — top1nfo*\n"
@@ -50,7 +49,7 @@ REGRAS_AGRONOMICAS = {
         )
     },
     "ferrugem": {
-        "cooldown": 43200,  # 12 horas
+        "cooldown": 43200,
         "condicao": lambda t, h: 18.0 <= t <= 24.0 and h > 90.0,
         "mensagem": (
             "🟠 *ALERTA FERRUGEM TARDIA — top1nfo*\n"
@@ -63,7 +62,7 @@ REGRAS_AGRONOMICAS = {
         )
     },
     "escaldadura": {
-        "cooldown": 1800,   # 30 min
+        "cooldown": 1800,
         "condicao": lambda t, h: t >= 32.0,
         "mensagem": (
             "🔥 *ALERTA ESCALDADURA — top1nfo*\n"
@@ -77,19 +76,12 @@ REGRAS_AGRONOMICAS = {
     }
 }
 
-# Cooldown em memória por regra
-# Reseta no reinício — aceitável: melhor alertar demais que silenciar após crash
 ultimo_alerta = {nome: 0.0 for nome in REGRAS_AGRONOMICAS}
 
 # ============================================================
 # WHATSAPP
 # ============================================================
 def enviar_alerta_whatsapp(nome_regra, temp, umi):
-    """
-    Envia alerta com plano de ação agronômico.
-    CORREÇÃO: verifica status HTTP da resposta antes de marcar como enviado.
-    Sem isso, uma falha da CallMeBot silenciava o alerta por horas.
-    """
     regra          = REGRAS_AGRONOMICAS[nome_regra]
     agora          = time.time()
     tempo_restante = regra["cooldown"] - (agora - ultimo_alerta[nome_regra])
@@ -108,18 +100,17 @@ def enviar_alerta_whatsapp(nome_regra, temp, umi):
         )
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
-            ultimo_alerta[nome_regra] = agora  # Marca como enviado SÓ se sucesso
-            print(f"📱 [WHATSAPP] Alerta '{nome_regra}' enviado com sucesso.")
+            ultimo_alerta[nome_regra] = agora
+            print(f"📱 [WHATSAPP] Alerta '{nome_regra}' enviado.")
         else:
-            print(f"⚠️ [WHATSAPP] CallMeBot retornou HTTP {resp.status_code} — NÃO marcado como enviado, tentará novamente.")
+            print(f"⚠️ [WHATSAPP] HTTP {resp.status_code} — tentará novamente.")
     except requests.exceptions.Timeout:
-        print(f"⚠️ [WHATSAPP] Timeout ao enviar '{nome_regra}' — tentará novamente.")
+        print(f"⚠️ [WHATSAPP] Timeout '{nome_regra}' — tentará novamente.")
     except Exception as e:
-        print(f"❌ [WHATSAPP] Erro inesperado '{nome_regra}': {e}")
+        print(f"❌ [WHATSAPP] Erro '{nome_regra}': {e}")
 
 
 def avaliar_e_alertar(temp, umi):
-    """Avalia todas as regras e dispara os alertas necessários."""
     for nome_regra, regra in REGRAS_AGRONOMICAS.items():
         if regra["condicao"](temp, umi):
             print(f"⚠️  [RISCO] {nome_regra.upper()} — T:{temp}°C U:{umi}%")
@@ -129,10 +120,15 @@ def avaliar_e_alertar(temp, umi):
 # BANCO DE DADOS
 # ============================================================
 def inicializar_banco():
-    """Cria tabelas se não existirem. Seguro chamar múltiplas vezes."""
+    """
+    Cria tabelas e adiciona colunas novas em bancos antigos (auto-cura).
+    CORREÇÃO: ADD COLUMN IF NOT EXISTS garante que sensor_id seja adicionada
+    mesmo em bancos criados antes desta coluna existir.
+    """
     try:
         conn   = psycopg2.connect(DB_URL)
         cursor = conn.cursor()
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS leituras_cafe (
                 id          SERIAL PRIMARY KEY,
@@ -142,6 +138,13 @@ def inicializar_banco():
                 sensor_id   TEXT        NOT NULL DEFAULT 'ESP32_Fazenda'
             )
         """)
+
+        # Auto-cura: adiciona sensor_id se banco foi criado sem ela
+        cursor.execute("""
+            ALTER TABLE leituras_cafe
+            ADD COLUMN IF NOT EXISTS sensor_id TEXT NOT NULL DEFAULT 'ESP32_Fazenda'
+        """)
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS controle_sistema (
                 chave TEXT PRIMARY KEY,
@@ -153,6 +156,7 @@ def inicializar_banco():
             VALUES ('ultimo_cleanup', '2000-01-01T00:00:00')
             ON CONFLICT (chave) DO NOTHING
         """)
+
         conn.commit()
         cursor.close()
         conn.close()
@@ -162,19 +166,34 @@ def inicializar_banco():
 
 
 def salvar_no_banco(temp, umi, sensor_id="ESP32_Fazenda"):
-    """Salva leitura e executa cleanup diário (controle por timestamp no banco)."""
+    """
+    CORREÇÃO: gravação e cleanup em blocos try/except SEPARADOS.
+    Antes, se o cleanup falhasse, o rollback apagava também o INSERT do dado.
+    Agora, mesmo que o cleanup falhe, o dado da lavoura é sempre salvo.
+    """
+    # BLOCO 1: salva o dado — nunca pode falhar silenciosamente
     try:
         conn   = psycopg2.connect(DB_URL)
         cursor = conn.cursor()
-
         cursor.execute(
             "INSERT INTO leituras_cafe (temperatura, umidade, sensor_id) VALUES (%s, %s, %s)",
             (temp, umi, sensor_id)
         )
+        conn.commit()
+        cursor.close()
+        conn.close()
+        print(f"☕ [DATABASE] {temp}°C | {umi}% | {sensor_id}")
+    except Exception as e:
+        print(f"❌ [DATABASE ERROR] Falha ao salvar leitura: {e}")
+        return  # Se não salvou, não tem sentido tentar o cleanup
 
+    # BLOCO 2: cleanup diário — falha aqui não afeta o dado já salvo
+    try:
+        conn   = psycopg2.connect(DB_URL)
+        cursor = conn.cursor()
         cursor.execute("SELECT valor FROM controle_sistema WHERE chave = 'ultimo_cleanup'")
         row = cursor.fetchone()
-        # CORREÇÃO: datetime.now(timezone.utc) em vez de utcnow() (depreciado no Python 3.12)
+
         agora          = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         ultimo_cleanup = datetime.datetime.fromisoformat(row[0]) if row else datetime.datetime(2000, 1, 1)
 
@@ -187,14 +206,13 @@ def salvar_no_banco(temp, umi, sensor_id="ESP32_Fazenda"):
                 "UPDATE controle_sistema SET valor = %s WHERE chave = 'ultimo_cleanup'",
                 (agora.isoformat(),)
             )
+            conn.commit()
             print(f"🧹 [CLEANUP] {deletados} registros com +30 dias removidos.")
 
-        conn.commit()
         cursor.close()
         conn.close()
-        print(f"☕ [DATABASE] {temp}°C | {umi}% | {sensor_id}")
     except Exception as e:
-        print(f"❌ [DATABASE ERROR] {e}")
+        print(f"⚠️ [CLEANUP] Falha na limpeza (dado já salvo): {e}")
 
 # ============================================================
 # CALLBACKS MQTT
@@ -215,14 +233,11 @@ def on_message(client, userdata, msg):
         print(f"📦 [PAYLOAD] {payload}")
         data    = json.loads(payload)
 
-        # CORREÇÃO CRÍTICA: converte para float explicitamente
-        # Sem isso, se o ESP32 enviar "25.5" como string (em vez de 25.5 numérico),
-        # a comparação lambda t <= 4.0 lança TypeError e silencia todos os alertas
         try:
             temp = float(data.get("temp"))
             umi  = float(data.get("umi"))
         except (TypeError, ValueError):
-            print("⚠️  [PAYLOAD] 'temp' ou 'umi' ausentes ou não numéricos — mensagem ignorada.")
+            print("⚠️  [PAYLOAD] 'temp' ou 'umi' ausentes ou não numéricos.")
             return
 
         sensor_id = str(data.get("sensor_id", "ESP32_Fazenda"))
@@ -236,9 +251,9 @@ def on_message(client, userdata, msg):
         print(f"⚠️  [PROCESSAMENTO] Erro inesperado: {e}")
 
 
-def on_disconnect(client, userdata, rc):
-    if rc != 0:
-        print(f"🔌 [MQTT] Desconectado inesperadamente (rc={rc}). Aguardando reconexão...")
+def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
+    if reason_code != 0:
+        print(f"🔌 [MQTT] Desconectado (rc={reason_code}). Aguardando reconexão...")
 
 # ============================================================
 # INICIALIZAÇÃO
