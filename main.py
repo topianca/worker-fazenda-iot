@@ -245,7 +245,7 @@ def on_disconnect(client, userdata, rc):
 # ============================================================
 inicializar_banco()
 
-client = mqtt.Client(client_id="Railway_Worker_top1nfo")
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="Railway_Worker_top1nfo")
 client.username_pw_set(MQTT_USER, MQTT_PASS)
 
 context                = ssl.create_default_context()
